@@ -1,0 +1,6 @@
+{
+  "name": "VeloVideo",
+  "description": "Powerful client-side video processing toolkit with batch compression, extraction, conversion, and speed control.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

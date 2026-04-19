@@ -1,11 +1,23 @@
-<div align="center">
+# VeloVideo Studio 🎬
+A high-performance, client-side video processing toolkit powered by FFmpeg.wasm.
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+### Key Features
+- **Batch Compression**: Reduce video sizes using H.264 (CRF controlled).
+- **Media Extractor**: Batch extract audio to MP3 or isolate video streams.
+- **Format Converter**: Batch container conversion (MP4, WebM, MOV, AVI).
+- **Variable Speed FX**: 1.2x to 16x acceleration with pitch-corrected audio.
+- **Privacy First**: All processing happens in your browser. No files are uploaded to any server.
+- **Batch ZIP Exports**: Compiles processed results into a single archive for one-click downloading.
 
-  <h1>Built with AI Studio</h2>
+### Tech Stack
+- **Frontend**: React 19 + TypeScript + Tailwind CSS
+- **Engine**: FFmpeg.wasm (WebAssembly)
+- **Styling**: Elegant Dark Theme with Motion (Framer Motion)
+- **Backend / Proxy**: Express (providing COOP/COEP security headers)
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+### Local Development
+1. `npm install`
+2. `npm run dev` (Runs the custom Express + Vite server)
+3. Open `http://localhost:3000`
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
-
-</div>
+*Note: Requires a browser that supports SharedArrayBuffer (Chrome, Edge, Firefox).*
