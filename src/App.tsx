@@ -23,17 +23,25 @@ import {
   Menu,
   X,
   Loader2,
-  Bell
+  Bell,
+  Scissors,
+  Image,
+  Repeat,
+  RotateCw,
+  ArrowLeftRight
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
 import type { TaskType, VideoFile, ProcessingOptions, Notification } from './types';
 
 const TASKS: { id: TaskType; label: string; icon: any; description: string }[] = [
-  { id: 'compress', label: 'Video Compressor', icon: Maximize, description: 'Batch reduce file size with H.264' },
+  { id: 'compress', label: 'Video Compressor', icon: Maximize, description: 'Batch reduce file size & scale resolution' },
   { id: 'extract', label: 'Media Extractor', icon: Volume2, description: 'Batch extract audio or video streams' },
+  { id: 'slice', label: 'Clip Slicer', icon: Scissors, description: 'Lossless splitting or range extraction' },
+  { id: 'gif', label: 'GIF Maker', icon: Image, description: 'High-quality 2-pass GIF generation' },
   { id: 'convert', label: 'Format Converter', icon: Layers, description: 'Batch change container formats' },
   { id: 'speed', label: 'Variable Speed', icon: Zap, description: 'Batch playback acceleration with pitch sync' },
+  { id: 'transform', label: 'Video Transform', icon: RotateCw, description: 'Loop, Rotate, Flip, or Reverse videos' },
 ];
 
 export default function App() {
@@ -49,10 +57,21 @@ export default function App() {
   // Options State
   const [options, setOptions] = useState<ProcessingOptions>({
     task: 'compress',
-    compressionLevel: 28, // CRF value for x264
+    compressionLevel: 28,
+    resolution: 'original',
     extractType: 'audio',
     targetFormat: 'mp4',
     speedMultiplier: 2.0,
+    gifFps: 10,
+    gifWidth: 480,
+    sliceMode: 'range',
+    splitInterval: 600,
+    rangeStart: '00:00:00',
+    rangeEnd: '00:01:00',
+    rotation: '0',
+    flip: 'none',
+    loopCount: 2,
+    reverse: false,
   });
 
   // Notifications
@@ -164,11 +183,11 @@ export default function App() {
   };
 
   const downloadAllAsZip = async () => {
-    const finishedFiles = files.filter(f => f.status === 'done' && f.outputUrl);
+    const finishedFiles = files.filter(f => f.status === 'done' && (f.outputUrl || f.isMultiOutput));
     if (finishedFiles.length === 0) return;
 
-    if (finishedFiles.length === 1) {
-      // Direct download if only one file
+    // Single file download (if not multi-output)
+    if (finishedFiles.length === 1 && !finishedFiles[0].isMultiOutput) {
       const f = finishedFiles[0];
       const link = document.createElement('a');
       link.href = f.outputUrl!;
@@ -181,25 +200,29 @@ export default function App() {
     const totalSize = finishedFiles.reduce((acc, f) => acc + (f.size || 0), 0);
     
     if (totalSize > 1.5 * 1024 * 1024 * 1024) {
-      addNotification('Large Batch Warning', 'Total size exceeds 1.5GB. browser memory limits may cause zip failure. Recommended: Download individually.', 'warning');
+      addNotification('Large Batch Warning', 'Total size exceeds 1.5GB. Browser memory limits may cause zip failure. Recommended: Download individually.', 'warning');
     }
 
-    addNotification('Zipping Files', `Compiling ${finishedFiles.length} files...`, 'info');
+    addNotification('Zipping Files', `Compiling results into a single ZIP...`, 'info');
 
     try {
       for (const file of finishedFiles) {
-        const response = await fetch(file.outputUrl!);
-        const blob = await response.blob();
-        zip.file(file.outputName!, blob);
+        if (file.isMultiOutput && file.outputUrls) {
+          for (const out of file.outputUrls) {
+            const response = await fetch(out.url);
+            const blob = await response.blob();
+            zip.file(out.name, blob);
+          }
+        } else if (file.outputUrl) {
+          const response = await fetch(file.outputUrl);
+          const blob = await response.blob();
+          zip.file(file.outputName!, blob);
+        }
       }
 
       const content = await zip.generateAsync({ 
         type: 'blob',
-        compression: 'STORE', // Use STORE for fast processing of large files
-      }, (metadata) => {
-        if (metadata.percent % 10 === 0) {
-          console.log(`ZIP Progress: ${metadata.percent.toFixed(2)}%`);
-        }
+        compression: 'STORE',
       });
       const url = URL.createObjectURL(content);
       const link = document.createElement('a');
@@ -223,7 +246,23 @@ export default function App() {
 
   const processFile = async (item: VideoFile) => {
     const ffmpeg = ffmpegRef.current;
-    const { task, compressionLevel, extractType, targetFormat, speedMultiplier } = options;
+    const { 
+      compressionLevel, 
+      resolution, 
+      extractType, 
+      targetFormat, 
+      speedMultiplier,
+      gifFps,
+      gifWidth,
+      sliceMode,
+      splitInterval,
+      rangeStart,
+      rangeEnd,
+      rotation,
+      flip,
+      loopCount,
+      reverse 
+    } = options;
     
     setActiveFileId(item.id);
     setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'processing', progress: 0 } : f));
@@ -243,7 +282,8 @@ export default function App() {
       switch (activeTask) {
         case 'compress':
           outputName = `compressed_${item.id}_${item.name}`;
-          args = ['-i', inputName, '-vcodec', 'libx264', '-crf', compressionLevel.toString(), '-preset', 'ultrafast', outputName]; // Switch to ultrafast for memory/speed
+          const scaleFilter = resolution === 'original' ? '' : `,scale=${resolution === '4k' ? '3840' : resolution === '1080p' ? '1920' : resolution === '720p' ? '1280' : '854'}:-1`;
+          args = ['-i', inputName, '-vf', `format=yuv420p${scaleFilter}`, '-vcodec', 'libx264', '-crf', compressionLevel.toString(), '-preset', 'ultrafast', outputName];
           break;
         case 'extract':
           if (extractType === 'audio') {
@@ -254,13 +294,33 @@ export default function App() {
             args = ['-i', inputName, '-an', '-vcodec', 'copy', outputName];
           }
           break;
+        case 'slice':
+          if (sliceMode === 'range') {
+            outputName = `clip_${item.id}_${item.name}`;
+            // Use -avoid_negative_ts make_zero to ensure the output starts at 00:00:00
+            args = ['-i', inputName, '-ss', rangeStart, '-to', rangeEnd, '-c', 'copy', '-avoid_negative_ts', 'make_zero', outputName];
+          } else {
+            // Split mode
+            outputName = `${item.id}_part_%03d_${item.name}`;
+            // -reset_timestamps 1 ensures each segment starts at 0
+            args = ['-i', inputName, '-f', 'segment', '-segment_time', splitInterval.toString(), '-reset_timestamps', '1', '-c', 'copy', outputName];
+          }
+          break;
+        case 'gif':
+          outputName = `processed_${item.id}_${item.name.replace(/\.[^/.]+$/, "")}.gif`;
+          // 2-pass palette generation for HQ GIF
+          const paletteName = 'palette.png';
+          const gifFilter = `fps=${gifFps},scale=${gifWidth}:-1:flags=lanczos`;
+          
+          await ffmpeg.exec(['-i', inputName, '-vf', `${gifFilter},palettegen`, paletteName]);
+          args = ['-i', inputName, '-i', paletteName, '-filter_complex', `[0:v]${gifFilter}[x];[x][1:v]paletteuse`, outputName];
+          break;
         case 'convert':
           outputName = `${item.id}_${item.name.replace(/\.[^/.]+$/, "")}.${targetFormat}`;
-          // Use copy codec if possible for speed and memory efficiency
           args = ['-i', inputName, '-c', 'copy', '-map', '0', outputName];
           break;
         case 'speed':
-          outputName = `speed_${speedMultiplier}x_${item.id}_${item.name}`;
+          outputName = `speed_${item.id}_${item.name}`;
           let atempoChain = '';
           let remainingSpeed = speedMultiplier;
           while (remainingSpeed > 2.0) {
@@ -283,31 +343,72 @@ export default function App() {
             outputName
           ];
           break;
+        case 'transform':
+          outputName = `transformed_${item.id}_${item.name}`;
+          const filters: string[] = [];
+          if (rotation !== '0') filters.push(rotation === '90' ? 'transpose=1' : rotation === '180' ? 'transpose=2,transpose=2' : 'transpose=2');
+          if (flip === 'h' || flip === 'both') filters.push('hflip');
+          if (flip === 'v' || flip === 'both') filters.push('vflip');
+          if (reverse) filters.push('reverse'); // Note: reverse is heavy
+          
+          const vf = filters.length > 0 ? ['-vf', filters.join(',')] : [];
+          
+          if (loopCount > 1) {
+            args = ['-stream_loop', (loopCount - 1).toString(), '-i', inputName, ...vf, '-vcodec', 'libx264', '-preset', 'ultrafast', outputName];
+          } else {
+            args = ['-i', inputName, ...vf, '-vcodec', 'libx264', '-preset', 'ultrafast', outputName];
+          }
+          break;
       }
 
-      await ffmpeg.exec(args);
+      const result = await ffmpeg.exec(args);
 
-      // Read output
-      const data = await ffmpeg.readFile(outputName);
-      const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: 'video/mp4' }));
+      if (activeTask === 'slice' && sliceMode === 'split') {
+        // Find all files matching the pattern
+        const list = await ffmpeg.listDir('.');
+        const parts = list.filter(f => !f.isDir && f.name.startsWith(`${item.id}_part_`));
+        
+        const outputs = await Promise.all(parts.map(async (p) => {
+          const d = await ffmpeg.readFile(p.name);
+          const u = URL.createObjectURL(new Blob([(d as any).buffer], { type: 'video/mp4' }));
+          await ffmpeg.deleteFile(p.name);
+          return { name: p.name.replace(`${item.id}_`, ''), url: u };
+        }));
 
-      // CLEANUP IMMEDIATELY
-      await ffmpeg.deleteFile(inputName);
-      await ffmpeg.deleteFile(outputName);
+        await ffmpeg.deleteFile(inputName);
+        
+        setFiles(prev => prev.map(f => f.id === item.id ? { 
+          ...f, 
+          status: 'done', 
+          progress: 100, 
+          isMultiOutput: true,
+          outputUrls: outputs
+        } : f));
 
-      setFiles(prev => prev.map(f => f.id === item.id ? { 
-        ...f, 
-        status: 'done', 
-        progress: 100, 
-        outputUrl: url,
-        outputName: outputName
-      } : f));
+      } else {
+        // Read output
+        const data = await ffmpeg.readFile(outputName);
+        const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: 'video/mp4' }));
+
+        // CLEANUP IMMEDIATELY
+        await ffmpeg.deleteFile(inputName);
+        await ffmpeg.deleteFile(outputName);
+        if (activeTask === 'gif') await ffmpeg.deleteFile('palette.png');
+
+        setFiles(prev => prev.map(f => f.id === item.id ? { 
+          ...f, 
+          status: 'done', 
+          progress: 100, 
+          outputUrl: url,
+          outputName: outputName
+        } : f));
+      }
     } catch (error) {
       console.error('Processing error:', error);
       const isMemoryError = String(error).includes('memory access out of bounds');
       if (isMemoryError) {
         addNotification('Memory Limit Hit', 'Batch paused to protect engine. Resetting WASM system...', 'warning');
-        await reloadEngine(); // Auto-reset on memory failure
+        await reloadEngine();
       }
       setFiles(prev => prev.map(f => f.id === item.id ? { ...f, status: 'error', message: isMemoryError ? 'Memory Reset' : 'Task failed' } : f));
     } finally {
@@ -580,6 +681,19 @@ export default function App() {
                     />
                     <p className="text-[10px] text-text-secondary mt-1">Lower CRF = Higher Quality. Standard is 23-28.</p>
                   </div>
+
+                  <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest mt-4 block">Resize Output</label>
+                  <select 
+                    value={options.resolution}
+                    onChange={(e) => setOptions({...options, resolution: e.target.value as any})}
+                    className="w-full bg-bg border border-border rounded-xl p-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="original">Original Size</option>
+                    <option value="4k">4K (3840px)</option>
+                    <option value="1080p">1080p (1920px)</option>
+                    <option value="720p">720p (1280px)</option>
+                    <option value="480p">480p (854px)</option>
+                  </select>
                 </div>
               )}
 
@@ -609,6 +723,100 @@ export default function App() {
                 </div>
               )}
 
+              {activeTask === 'slice' && (
+                <div className="space-y-4">
+                  <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Slicing Method</label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button 
+                      onClick={() => setOptions({...options, sliceMode: 'range'})}
+                      className={cn(
+                        "p-3 rounded-xl border text-sm transition-all",
+                        options.sliceMode === 'range' ? "bg-accent/10 border-accent/40 text-accent" : "bg-bg/50 border-border text-text-secondary hover:bg-bg"
+                      )}
+                    >
+                      Custom Range
+                    </button>
+                    <button 
+                      onClick={() => setOptions({...options, sliceMode: 'split'})}
+                      className={cn(
+                        "p-3 rounded-xl border text-sm transition-all",
+                        options.sliceMode === 'split' ? "bg-accent/10 border-accent/40 text-accent" : "bg-bg/50 border-border text-text-secondary hover:bg-bg"
+                      )}
+                    >
+                      Auto Split
+                    </button>
+                  </div>
+
+                  {options.sliceMode === 'range' ? (
+                    <div className="space-y-3 p-4 bg-bg rounded-xl">
+                      <div className="space-y-1">
+                        <label className="text-[9px] uppercase font-bold text-text-secondary">Start Time</label>
+                        <input 
+                          type="text" 
+                          placeholder="00:00:00"
+                          value={options.rangeStart}
+                          onChange={(e) => setOptions({...options, rangeStart: e.target.value})}
+                          className="w-full bg-surface border border-border p-2 rounded-lg text-xs font-mono"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[9px] uppercase font-bold text-text-secondary">End Time</label>
+                        <input 
+                          type="text" 
+                          placeholder="00:01:00"
+                          value={options.rangeEnd}
+                          onChange={(e) => setOptions({...options, rangeEnd: e.target.value})}
+                          className="w-full bg-surface border border-border p-2 rounded-lg text-xs font-mono"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-3 p-4 bg-bg rounded-xl">
+                      <label className="text-[9px] uppercase font-bold text-text-secondary">Split Every (Seconds)</label>
+                      <input 
+                        type="number" 
+                        value={options.splitInterval}
+                        onChange={(e) => setOptions({...options, splitInterval: parseInt(e.target.value)})}
+                        className="w-full bg-surface border border-border p-2 rounded-lg text-xs font-mono"
+                      />
+                      <p className="text-[9px] text-text-secondary italic">Lossless slicing cuts at the nearest keyframe.</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {activeTask === 'gif' && (
+                <div className="space-y-4">
+                  <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">GIF Quality Settings</label>
+                  <div className="bg-bg p-4 rounded-xl space-y-4">
+                    <div className="space-y-2">
+                       <div className="flex justify-between text-[10px] uppercase font-bold text-text-secondary">
+                         <span>Frame Rate</span>
+                         <span className="text-accent">{options.gifFps} fps</span>
+                       </div>
+                       <input 
+                        type="range" min="5" max="30" step="1"
+                        value={options.gifFps}
+                        onChange={(e) => setOptions({...options, gifFps: parseInt(e.target.value)})}
+                        className="w-full accent-accent bg-border h-1 rounded-full appearance-none"
+                       />
+                    </div>
+                    <div className="space-y-2">
+                       <div className="flex justify-between text-[10px] uppercase font-bold text-text-secondary">
+                         <span>Output Width</span>
+                         <span className="text-accent">{options.gifWidth}px</span>
+                       </div>
+                       <input 
+                        type="range" min="160" max="1080" step="20"
+                        value={options.gifWidth}
+                        onChange={(e) => setOptions({...options, gifWidth: parseInt(e.target.value)})}
+                        className="w-full accent-accent bg-border h-1 rounded-full appearance-none"
+                       />
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {activeTask === 'convert' && (
                 <div className="space-y-4">
                    <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Target Format</label>
@@ -621,7 +829,68 @@ export default function App() {
                      <option value="webm">WebM Video</option>
                      <option value="mov">QuickTime (MOV)</option>
                      <option value="avi">AVI Video</option>
+                     <option value="mkv">Matroska (MKV)</option>
+                     <option value="flv">Flash Video (FLV)</option>
+                     <option value="wmv">Windows Media (WMV)</option>
                    </select>
+                </div>
+              )}
+
+              {activeTask === 'transform' && (
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Orientation</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select 
+                        value={options.rotation}
+                        onChange={(e) => setOptions({...options, rotation: e.target.value as any})}
+                        className="bg-bg border border-border rounded-lg p-2 text-xs"
+                      >
+                         <option value="0">No Rotation</option>
+                         <option value="90">Rotate 90° CW</option>
+                         <option value="180">Rotate 180°</option>
+                         <option value="270">Rotate 90° CCW</option>
+                      </select>
+                      <select 
+                        value={options.flip}
+                        onChange={(e) => setOptions({...options, flip: e.target.value as any})}
+                        className="bg-bg border border-border rounded-lg p-2 text-xs"
+                      >
+                         <option value="none">No Flip</option>
+                         <option value="h">Flip Horizontal</option>
+                         <option value="v">Flip Vertical</option>
+                         <option value="both">Flip Both</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Loop Settings</label>
+                    <div className="flex items-center gap-4 bg-bg p-3 rounded-xl">
+                      <Repeat size={16} className="text-accent" />
+                      <input 
+                        type="number" min="1" max="50"
+                        value={options.loopCount}
+                        onChange={(e) => setOptions({...options, loopCount: parseInt(e.target.value)})}
+                        className="bg-transparent border-none text-sm w-full focus:outline-none"
+                      />
+                      <span className="text-[10px] text-text-secondary">TIMES</span>
+                    </div>
+                  </div>
+
+                  <button 
+                    onClick={() => setOptions({...options, reverse: !options.reverse})}
+                    className={cn(
+                      "w-full flex items-center justify-center gap-3 p-3 rounded-xl border transition-all text-xs font-bold",
+                      options.reverse ? "bg-accent/10 border-accent text-accent" : "bg-bg/50 border-border text-text-secondary"
+                    )}
+                  >
+                    <ArrowLeftRight size={14} />
+                    {options.reverse ? 'REVERSING ACTIVE' : 'ENABLE REVERSE'}
+                  </button>
+                  {options.reverse && (
+                    <p className="text-[9px] text-warning italic text-center">Note: Reversing large files is memory intensive.</p>
+                  )}
                 </div>
               )}
 

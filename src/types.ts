@@ -1,4 +1,4 @@
-export type TaskType = 'compress' | 'extract' | 'convert' | 'speed';
+export type TaskType = 'compress' | 'extract' | 'convert' | 'speed' | 'gif' | 'slice' | 'transform';
 
 export interface VideoFile {
   id: string;
@@ -10,14 +10,33 @@ export interface VideoFile {
   message?: string;
   outputUrl?: string;
   outputName?: string;
+  isMultiOutput?: boolean;
+  outputUrls?: { name: string; url: string }[];
 }
 
 export interface ProcessingOptions {
   task: TaskType;
-  compressionLevel: number; // 0-100
+  // Compress
+  compressionLevel: number;
+  resolution: 'original' | '4k' | '1080p' | '720p' | '480p';
+  // Extract / Convert
   extractType: 'audio' | 'video' | 'both';
   targetFormat: string;
-  speedMultiplier: number; // 1.2 to 16
+  // Speed
+  speedMultiplier: number;
+  // GIF
+  gifFps: number;
+  gifWidth: number;
+  // Slice
+  sliceMode: 'split' | 'range';
+  splitInterval: number; // in seconds
+  rangeStart: string; // HH:MM:SS
+  rangeEnd: string; // HH:MM:SS
+  // Transform
+  rotation: '0' | '90' | '180' | '270';
+  flip: 'none' | 'h' | 'v' | 'both';
+  loopCount: number;
+  reverse: boolean;
 }
 
 export interface Notification {
