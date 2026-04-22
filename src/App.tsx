@@ -432,51 +432,80 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-screen bg-bg text-text-primary overflow-hidden">
+    <div className="flex h-screen bg-bg text-text-primary overflow-hidden relative">
       {/* Sidebar Navigation */}
       <aside 
         className={cn(
-          "bg-surface border-r border-border flex flex-col transition-all duration-300 z-50",
-          isSidebarOpen ? "w-64" : "w-16"
+          "bg-surface border-r border-border flex flex-col transition-all duration-300 z-[70] h-full shadow-2xl overflow-hidden",
+          "fixed lg:relative",
+          isSidebarOpen ? "w-72 translate-x-0" : "w-72 lg:w-20 -translate-x-full lg:translate-x-0"
         )}
       >
-        <div className="p-4 flex items-center justify-between">
-          {isSidebarOpen && (
-            <div className="flex items-center gap-2 font-bold text-xl tracking-tight">
-              <span className="text-accent italic font-black">V</span>
-              <span>VELOVIDEO</span>
-            </div>
-          )}
+        <div className="p-6 flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3 font-bold text-xl tracking-tight overflow-hidden whitespace-nowrap">
+            <span className="text-accent italic font-black text-2xl shrink-0">V</span>
+            <span className={cn(
+              "transition-all duration-300 origin-left truncate",
+              isSidebarOpen ? "opacity-100 scale-100" : "opacity-0 scale-95 lg:hidden"
+            )}>
+              VELOVIDEO
+            </span>
+          </div>
+          <button 
+            onClick={() => setIsSidebarOpen(false)}
+            className="p-2 hover:bg-bg rounded-xl transition-colors lg:hidden shrink-0"
+          >
+            <X size={20} />
+          </button>
           <button 
             onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            className="p-2 hover:bg-bg rounded-lg transition-colors"
+            className="p-2 hover:bg-bg rounded-xl transition-colors hidden lg:block shrink-0"
           >
             {isSidebarOpen ? <X size={20} /> : <Menu size={20} />}
           </button>
         </div>
 
-        <nav className="flex-1 mt-6">
-          <div className="px-3 space-y-1">
+        <nav className="flex-1 mt-4 overflow-y-auto overflow-x-hidden pt-2">
+          <div className="px-4 space-y-2">
             {TASKS.map((task) => (
               <button
                 key={task.id}
-                onClick={() => setActiveTask(task.id)}
+                onClick={() => {
+                  setActiveTask(task.id);
+                  if (window.innerWidth < 1024) setIsSidebarOpen(false);
+                }}
                 className={cn(
-                  "w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all text-sm",
+                  "w-full flex items-center gap-4 px-4 py-3 rounded-xl transition-all text-sm group relative",
                   activeTask === task.id 
-                    ? "bg-accent/10 text-white border-l-2 border-accent" 
-                    : "text-text-secondary hover:bg-bg/50 hover:text-text-primary border-l-2 border-transparent"
+                    ? "bg-accent/15 text-white ring-1 ring-accent/30" 
+                    : "text-text-secondary hover:bg-bg/60 hover:text-text-primary"
                 )}
               >
-                <task.icon size={18} className={activeTask === task.id ? "text-accent" : ""} />
-                {isSidebarOpen && <span className="font-medium">{task.label}</span>}
+                <div className={cn(
+                  "shrink-0 transition-transform group-hover:scale-110",
+                  activeTask === task.id ? "text-accent" : "text-text-secondary"
+                )}>
+                  <task.icon size={20} />
+                </div>
+                <span className={cn(
+                  "font-semibold transition-all duration-300 truncate",
+                  isSidebarOpen ? "opacity-100 translate-x-0" : "lg:opacity-0 lg:-translate-x-2 lg:hidden"
+                )}>
+                  {task.label}
+                </span>
+                {activeTask === task.id && (
+                  <motion.div 
+                    layoutId="activeTab"
+                    className="absolute left-0 w-1 h-6 bg-accent rounded-r-full"
+                  />
+                )}
               </button>
             ))}
           </div>
         </nav>
 
         {isSidebarOpen && (
-          <div className="p-4 mt-auto">
+          <div className="p-4 mt-auto border-t border-border">
             {typeof SharedArrayBuffer === 'undefined' && (
               <div className="mb-4 p-3 bg-accent/10 border border-accent/20 rounded-xl">
                 <p className="text-[10px] text-accent font-bold uppercase mb-1">Preview Warning</p>
@@ -491,7 +520,7 @@ export default function App() {
               <div className="flex items-center justify-between text-xs font-semibold text-text-secondary mb-2">
                 <div className="flex items-center gap-2">
                   <div className={cn("w-2 h-2 rounded-full", ffmpegLoaded ? "bg-success animate-pulse shadow-[0_0_8px_var(--color-success)]" : "bg-warning")} />
-                  WASM ENGINE: {ffmpegLoaded ? 'READY' : 'LOADING...'}
+                  {ffmpegLoaded ? 'WASM READY' : 'LOADING...'}
                 </div>
                 {ffmpegLoaded && (
                   <button 
@@ -500,125 +529,160 @@ export default function App() {
                     title="Refresh Engine"
                   >
                     <Loader2 size={10} className={cn(isProcessing && "animate-spin")} />
-                    Refresh
                   </button>
                 )}
               </div>
-              {!ffmpegLoaded && <Loader2 className="animate-spin text-accent" size={16} />}
+              {!ffmpegLoaded && <div className="h-1 bg-border rounded-full overflow-hidden"><div className="h-full bg-accent animate-shimmer w-1/2" /></div>}
             </div>
           </div>
         )}
       </aside>
 
+      {/* Mobile Sidebar Backdrop */}
+      {isSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[55] lg:hidden"
+          onClick={() => setIsSidebarOpen(false)}
+        />
+      )}
+
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col relative overflow-hidden">
+      <main className="flex-1 flex flex-col relative min-w-0 overflow-hidden h-full">
         {/* Header */}
-        <header className="h-16 border-b border-border bg-surface/50 backdrop-blur-md flex items-center justify-between px-8">
-          <div>
-            <h1 className="text-lg font-semibold">{TASKS.find(t => t.id === activeTask)?.label}</h1>
-            <p className="text-xs text-text-secondary">Client-Side Video Studio • Powered by FFmpeg</p>
-          </div>
+        <header className="h-20 border-b border-border bg-bg/80 backdrop-blur-xl flex items-center justify-between px-6 lg:px-10 shrink-0 sticky top-0 z-40">
           <div className="flex items-center gap-4">
-            <button className="p-2 hover:bg-surface rounded-full transition-colors relative">
-               <Bell size={18} className="text-text-secondary" />
-               {notifications.length > 0 && <span className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full border-2 border-bg" />}
+            <button 
+              onClick={() => setIsSidebarOpen(true)}
+              className={cn(
+                "p-2.5 hover:bg-surface rounded-xl lg:hidden transition-all active:scale-95",
+                isSidebarOpen ? "opacity-0 pointer-events-none" : "opacity-100"
+              )}
+            >
+              <Menu size={22} />
             </button>
-            <div className="w-8 h-8 rounded-full bg-accent/20 border border-accent/40 flex items-center justify-center text-accent">
-               <span className="text-xs font-bold">JB</span>
+            <div className="min-w-0">
+              <h1 className="text-base lg:text-xl font-bold tracking-tight text-white/90">
+                {TASKS.find(t => t.id === activeTask)?.label}
+              </h1>
+              <p className="text-[10px] text-text-secondary uppercase tracking-[0.2em] font-medium hidden sm:block mt-0.5">FFmpeg Studio Engine</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 lg:gap-6">
+            <button className="p-2.5 hover:bg-surface rounded-xl transition-all relative group">
+               <Bell size={20} className="text-text-secondary group-hover:text-white" />
+               {notifications.length > 0 && <span className="absolute top-2.5 right-2.5 w-2.5 h-2.5 bg-accent rounded-full border-2 border-bg" />}
+            </button>
+            <div className="flex items-center gap-3 pl-4 border-l border-border/50">
+               <div className="text-right hidden sm:block">
+                 <p className="text-[10px] font-bold text-white/80 leading-none">James B.</p>
+                 <p className="text-[9px] text-accent font-medium mt-1">PRO USER</p>
+               </div>
+               <div className="w-10 h-10 rounded-xl bg-accent/20 border border-accent/40 flex items-center justify-center text-accent shrink-0 shadow-lg shadow-accent/5">
+                 <span className="text-sm font-black">JB</span>
+               </div>
             </div>
           </div>
         </header>
 
-        {/* Workspace Grid */}
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-8 p-8 overflow-hidden">
-          {/* File Management Area */}
-          <div className="flex flex-col gap-6 overflow-hidden">
-            {/* Drop Zone */}
-            <div 
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={handleFileUpload}
-              className="group relative h-48 border-2 border-dashed border-border rounded-2xl flex flex-col items-center justify-center gap-4 bg-surface/20 transition-all hover:bg-surface/40 hover:border-accent/40 overflow-hidden"
-            >
-              <div className="p-4 bg-accent/10 rounded-full text-accent transition-transform group-hover:scale-110">
-                <Plus size={24} />
-              </div>
-              <div className="text-center">
-                <p className="font-medium">Drag & Drop videos to batch process</p>
-                <p className="text-xs text-text-secondary mt-1 italic">MP4, MOV, WEBM, AVI supported</p>
-              </div>
-              <input 
-                type="file" 
-                multiple 
-                onChange={handleFileUpload} 
-                className="absolute inset-0 opacity-0 cursor-pointer"
-              />
-            </div>
-
-            {/* File List */}
-            <div className="flex-1 overflow-y-auto pr-2 space-y-4">
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-xs font-bold text-text-secondary uppercase tracking-tighter">Queue ({files.length})</h2>
-                {files.some(f => f.status === 'done') && (
-                  <button 
-                    onClick={clearCompleted}
-                    className="text-[10px] text-accent hover:underline flex items-center gap-1"
-                  >
-                    Clear Completed
-                  </button>
-                )}
-              </div>
-              {files.length === 0 ? (
-                <div className="flex flex-col items-center justify-center h-full text-text-secondary opacity-40 py-12">
-                   <FileVideo size={64} strokeWidth={1} />
-                   <p className="mt-4">No files added yet</p>
+        {/* Workspace Area - Scrollable */}
+        <div className="flex-1 overflow-y-auto lg:overflow-hidden">
+          <div className="h-full grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 lg:gap-8 p-4 lg:p-8">
+            {/* File Management Area */}
+            <div className="flex flex-col gap-6 min-w-0 h-full lg:overflow-hidden">
+              {/* Drop Zone */}
+              <div 
+                onDragOver={(e) => e.preventDefault()}
+                onDrop={handleFileUpload}
+                className="group relative h-32 lg:h-48 border-2 border-dashed border-border rounded-2xl flex flex-col items-center justify-center gap-2 lg:gap-4 bg-surface/20 transition-all hover:bg-surface/40 hover:border-accent/40 overflow-hidden shrink-0"
+              >
+                <div className="p-2 lg:p-4 bg-accent/10 rounded-full text-accent transition-transform group-hover:scale-110">
+                  <Plus size={window.innerWidth < 1024 ? 20 : 24} />
                 </div>
-              ) : (
-                <AnimatePresence initial={false}>
-                  {files.map((file) => (
-                    <motion.div
-                      key={file.id}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      exit={{ opacity: 0, x: -100 }}
-                      className={cn(
-                        "bg-surface border border-border p-4 rounded-xl group relative overflow-hidden",
-                        activeFileId === file.id && "border-accent/50 shadow-[0_0_15px_rgba(59,130,246,0.1)]"
-                      )}
-                    >
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-3 overflow-hidden">
-                          <div className={cn(
-                            "p-2 rounded-lg bg-bg text-accent",
-                            file.status === 'processing' && "animate-pulse"
-                          )}>
-                            <FileVideo size={16} />
-                          </div>
-                          <div className="truncate">
-                            <h3 className="text-sm font-medium truncate max-w-[200px]">{file.name}</h3>
-                            <p className="text-[10px] font-mono text-text-secondary">{formatSize(file.size)}</p>
-                          </div>
-                        </div>
+                <div className="text-center px-4">
+                  <p className="font-medium text-xs lg:text-base">Upload or Drag Videos</p>
+                  <p className="text-[10px] text-text-secondary mt-1 hidden sm:block">MP4, MOV, WEBM, AVI supported</p>
+                </div>
+                <input 
+                  type="file" 
+                  multiple 
+                  onChange={handleFileUpload} 
+                  className="absolute inset-0 opacity-0 cursor-pointer"
+                />
+              </div>
 
-                        <div className="flex items-center gap-2">
-                          {file.status === 'done' && file.outputUrl && (
-                            <a 
-                              href={file.outputUrl} 
-                              download={file.outputName}
-                              className="p-2 bg-success/10 text-success rounded-lg hover:bg-success/20 transition-colors"
-                              title="Download processed file"
+              {/* File List */}
+              <div className="flex-1 lg:overflow-y-auto pr-0 lg:pr-2 space-y-4 min-h-[200px]">
+                <div className="flex items-center justify-between sticky top-0 bg-bg/80 backdrop-blur-sm py-1 z-10">
+                  <h2 className="text-[10px] font-bold text-text-secondary uppercase tracking-widest">Queue ({files.length})</h2>
+                  {files.some(f => f.status === 'done') && (
+                    <button 
+                      onClick={clearCompleted}
+                      className="text-[10px] text-accent hover:underline flex items-center gap-1"
+                    >
+                      Clear Completed
+                    </button>
+                  )}
+                </div>
+                {files.length === 0 ? (
+                  <div className="flex flex-col items-center justify-center h-full text-text-secondary opacity-40 py-12 lg:py-0">
+                     <FileVideo size={window.innerWidth < 1024 ? 48 : 64} strokeWidth={1} />
+                     <p className="mt-4 text-sm">No files added yet</p>
+                  </div>
+                ) : (
+                  <AnimatePresence initial={false}>
+                    {files.map((file) => (
+                      <motion.div
+                        key={file.id}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className={cn(
+                          "bg-surface border border-border p-3 lg:p-4 rounded-xl group relative overflow-hidden",
+                          activeFileId === file.id && "border-accent/50 shadow-[0_0_15px_rgba(59,130,246,0.1)]"
+                        )}
+                      >
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3 min-w-0">
+                            <div className={cn(
+                              "p-2 rounded-lg bg-bg text-accent shrink-0",
+                              file.status === 'processing' && "animate-pulse"
+                            )}>
+                              <FileVideo size={14} />
+                            </div>
+                            <div className="truncate pr-2">
+                              <h3 className="text-xs lg:text-sm font-medium truncate">{file.name}</h3>
+                              <p className="text-[9px] lg:text-[10px] font-mono text-text-secondary">{formatSize(file.size)}</p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 lg:gap-2 shrink-0">
+                            {file.status === 'done' && (file.outputUrl || file.isMultiOutput) && (
+                              <button 
+                                onClick={() => {
+                                  if (file.isMultiOutput) {
+                                    downloadAllAsZip(); 
+                                  } else {
+                                    const link = document.createElement('a');
+                                    link.href = file.outputUrl!;
+                                    link.download = file.outputName!;
+                                    link.click();
+                                  }
+                                }}
+                                className="p-1.5 lg:p-2 bg-success/10 text-success rounded-lg hover:bg-success/20 transition-colors"
+                                title="Download"
+                              >
+                                <Download size={12} lg:size={14} />
+                              </button>
+                            )}
+                            <button 
+                              disabled={file.status === 'processing'}
+                              onClick={() => removeFile(file.id)}
+                              className="p-1.5 lg:p-2 hover:bg-red-500/10 hover:text-red-400 text-text-secondary rounded-lg transition-colors disabled:opacity-30"
                             >
-                              <Download size={14} />
-                            </a>
-                          )}
-                          <button 
-                            disabled={file.status === 'processing'}
-                            onClick={() => removeFile(file.id)}
-                            className="p-2 hover:bg-red-500/10 hover:text-red-400 text-text-secondary rounded-lg transition-colors disabled:opacity-30"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+                              <Trash2 size={12} lg:size={14} />
+                            </button>
+                          </div>
                         </div>
-                      </div>
 
                       {/* Progress Bar & Status */}
                       <div className="space-y-2">
@@ -923,88 +987,70 @@ export default function App() {
               )}
             </div>
 
-            <div className="mt-auto pt-6 border-t border-border space-y-4">
-               <div className="space-y-2">
-                 <div className="flex items-center justify-between text-xs">
-                    <span className="text-text-secondary">Batch Mode</span>
-                    <span className="font-bold text-accent">ACTIVE</span>
+              {/* Action Buttons - Fixed for Mobile accessibility */}
+              <div className="mt-auto pt-4 border-t border-border space-y-3">
+                 <div className="flex items-center justify-between text-[10px] px-1">
+                    <span className="text-text-secondary">Queue Size</span>
+                    <span className="font-bold text-accent">{files.filter(f => f.status === 'idle' || f.status === 'error').length} Files</span>
                  </div>
-                 <div className="flex items-center justify-between text-xs">
-                    <span className="text-text-secondary">Selected Files</span>
-                    <span className="font-bold">{files.filter(f => f.status === 'idle' || f.status === 'error').length}</span>
-                 </div>
-               </div>
 
-               <button
-                 disabled={!ffmpegLoaded || isProcessing || files.filter(f => f.status === 'idle' || f.status === 'error').length === 0}
-                 onClick={startBatch}
-                 className={cn(
-                   "w-full py-4 rounded-xl font-bold text-sm tracking-widest transition-all flex items-center justify-center gap-3",
-                   isProcessing 
-                     ? "bg-bg text-accent cursor-wait border border-accent/40" 
-                     : "bg-accent hover:bg-accent/90 shadow-[0_4px_20px_rgba(59,130,246,0.3)] active:scale-95 disabled:bg-bg disabled:text-text-secondary disabled:shadow-none disabled:active:scale-100 disabled:opacity-50"
-                 )}
-               >
-                 {isProcessing ? (
-                   <>
-                     <Loader2 className="animate-spin" size={20} />
-                     PROCESSING...
-                   </>
-                 ) : (
-                   <>
-                     <Play size={20} fill="currentColor" />
-                     START BATCH PROCESS
-                   </>
-                 )}
-               </button>
-
-               {files.some(f => f.status === 'done') && (
                  <button
-                   onClick={downloadAllAsZip}
-                   className="w-full py-3 rounded-xl border border-accent text-accent font-bold text-xs tracking-widest hover:bg-accent/10 transition-all flex items-center justify-center gap-2"
+                   disabled={!ffmpegLoaded || isProcessing || files.filter(f => f.status === 'idle' || f.status === 'error').length === 0}
+                   onClick={startBatch}
+                   className={cn(
+                     "w-full py-3.5 lg:py-4 rounded-xl font-bold text-xs lg:text-sm tracking-widest transition-all flex items-center justify-center gap-3",
+                     isProcessing 
+                       ? "bg-bg text-accent border border-accent/40" 
+                       : "bg-accent hover:bg-accent/90 shadow-xl active:scale-[0.98] disabled:opacity-40"
+                   )}
                  >
-                   <Download size={16} />
-                   DOWNLOAD BATCH (ZIP)
+                   {isProcessing ? <Loader2 className="animate-spin" size={18} /> : <Play size={18} fill="currentColor" />}
+                   {isProcessing ? 'PROCESSING...' : 'START BATCH'}
                  </button>
-               )}
-            </div>
-          </aside>
+
+                 {files.some(f => f.status === 'done') && (
+                   <button
+                     onClick={downloadAllAsZip}
+                     className="w-full py-2.5 lg:py-3 rounded-xl border border-accent/50 text-accent font-bold text-[10px] lg:text-xs tracking-widest hover:bg-accent/10 transition-all flex items-center justify-center gap-2"
+                   >
+                     <Download size={14} />
+                     DOWNLOAD ALL (ZIP)
+                   </button>
+                 )}
+              </div>
+            </aside>
+          </div>
         </div>
 
-        {/* Notification Toasts - Moved to top to avoid blocking controls */}
-        <div className="absolute top-20 right-6 flex flex-col gap-3 pointer-events-none w-80 z-[100]">
+        {/* Global Progress Indicator (Mobile Only) */}
+        {isProcessing && (
+          <div className="fixed bottom-0 left-0 right-0 h-1 bg-bg z-[100] lg:hidden">
+            <div className="h-full bg-accent animate-pulse w-full origin-left" style={{ scaleX: 0.5 }} />
+          </div>
+        )}
+
+        {/* Notification Container */}
+        <div className="absolute top-20 right-4 lg:right-6 flex flex-col gap-3 pointer-events-none w-[85vw] sm:w-80 z-[100]">
           <AnimatePresence>
             {notifications.map((notif) => (
               <motion.div
                 key={notif.id}
-                initial={{ opacity: 0, x: 50, scale: 0.9 }}
-                animate={{ opacity: 1, x: 0, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.9, transition: { duration: 0.2 } }}
-                className="pointer-events-auto bg-surface border border-border shadow-[0_10px_40px_rgba(0,0,0,0.5)] p-4 rounded-2xl flex items-start gap-3 relative overflow-hidden"
+                initial={{ opacity: 0, x: 20 }}
+                animate={{ opacity: 1, x: 0 }}
+                exit={{ opacity: 0, scale: 0.9 }}
+                className="pointer-events-auto bg-surface/95 backdrop-blur-md border border-border shadow-2xl p-3 lg:p-4 rounded-2xl flex items-start gap-3"
               >
                 <div className={cn(
-                  "p-2 rounded-lg shrink-0",
+                  "p-2 rounded-lg",
                   notif.type === 'success' ? "bg-success/20 text-success" : 
-                  notif.type === 'error' ? "bg-red-500/20 text-red-400" : 
-                  notif.type === 'warning' ? "bg-warning/20 text-warning" :
-                  "bg-accent/20 text-accent"
+                  notif.type === 'error' ? "bg-red-500/20 text-red-400" : "bg-accent/20 text-accent"
                 )}>
-                  {notif.type === 'success' ? <CheckCircle size={18} /> : 
-                   notif.type === 'error' ? <AlertCircle size={18} /> : 
-                   notif.type === 'warning' ? <AlertCircle size={18} className="text-warning" /> :
-                   <Bell size={18} />}
+                  {notif.type === 'success' ? <CheckCircle size={16} /> : <Bell size={16} />}
                 </div>
                 <div className="flex-1 overflow-hidden">
-                  <h4 className="text-sm font-bold">{notif.title}</h4>
-                  <p className="text-xs text-text-secondary truncate">{notif.message}</p>
+                  <h4 className="text-xs lg:text-sm font-bold">{notif.title}</h4>
+                  <p className="text-[10px] text-text-secondary truncate">{notif.message}</p>
                 </div>
-                <div className={cn(
-                  "absolute bottom-0 left-0 h-1 bg-current opacity-20",
-                  notif.type === 'success' ? "text-success" : 
-                  notif.type === 'error' ? "text-red-400" : 
-                  notif.type === 'warning' ? "text-warning" :
-                  "text-accent"
-                )} style={{ width: '100%' }} />
               </motion.div>
             ))}
           </AnimatePresence>
