@@ -89,6 +89,8 @@ export default function App() {
   // FFmpeg State
   const ffmpegRef = useRef(new FFmpeg());
   const [ffmpegLoaded, setFfmpegLoaded] = useState(false);
+  const [lastLogs, setLastLogs] = useState<string[]>([]);
+  const [showLogs, setShowLogs] = useState(false);
 
   const addNotification = (title: string, message: string, type: Notification['type'] = 'info') => {
     const id = Math.random().toString(36).substring(7);
@@ -112,6 +114,7 @@ export default function App() {
     // Listen to logs
     ffmpeg.on('log', ({ message }) => {
       console.log('FFmpeg Log:', message);
+      setLastLogs(prev => [...prev.slice(-100), message]);
     });
 
     try {
@@ -444,80 +447,153 @@ export default function App() {
     }
     const ffmpeg = ffmpegRef.current;
     const masterId = items[0].id;
+    setLastLogs([]);
     
     setFiles(prev => prev.map(f => items.some(i => i.id === f.id) ? { ...f, status: 'processing', progress: 0 } : f));
     setActiveFileId(masterId);
+
+    const internalInputNames: string[] = [];
+    
+    // Safety check: ensure engine is idle and previous artifacts are gone
+    try { 
+      const currentFiles = await ffmpeg.listDir('.');
+      for (const f of currentFiles) {
+        if (!f.isDir && (f.name.startsWith('m_in') || f.name === 'concat.txt' || f.name.startsWith('merged_'))) {
+          await ffmpeg.deleteFile(f.name);
+        }
+      }
+    } catch (e) {}
 
     ffmpeg.on('progress', ({ progress }) => {
       setFiles(prev => prev.map(f => items.some(i => i.id === f.id) ? { ...f, progress: progress * 100 } : f));
     });
 
     try {
-      const inputNames: string[] = [];
       const durations: number[] = [];
+      const hasAudio: boolean[] = [];
 
-      for (const item of items) {
-        const name = `merge_in_${item.id}_${item.name}`;
-        await ffmpeg.writeFile(name, await fetchFile(item.file));
-        inputNames.push(name);
+      for (let i = 0; i < items.length; i++) {
+        const item = items[i];
+        const safeName = `m_in${i}.mp4`;
+        console.log(`[Merge] Writing file ${i}: ${safeName}`);
+        await ffmpeg.writeFile(safeName, await fetchFile(item.file));
+        internalInputNames.push(safeName);
         
-        // Get duration for xfade logic
-        if (options.mergeMode === 'crossfade') {
-          const dur = await new Promise<number>((resolve) => {
-            const v = document.createElement('video');
-            v.preload = 'metadata';
-            v.onloadedmetadata = () => resolve(v.duration);
-            v.onerror = () => resolve(0);
-            v.src = URL.createObjectURL(item.file);
-          });
-          durations.push(dur);
+        // Probe duration and audio
+        let dur = 0;
+        let audio = false;
+        
+        await new Promise<void>((resolve) => {
+          const v = document.createElement('video');
+          v.preload = 'metadata';
+          v.onloadedmetadata = () => {
+            dur = v.duration;
+            // Improved detection: Check multiple browser-specific properties
+            // webkitAudioDecodedByteCount is often 0 until playback start, 
+            // so we rely on track detection or a more optimistic default for mp4.
+            audio = Boolean((v as any).audioTracks && (v as any).audioTracks.length > 0) || 
+                    Boolean((v as any).webkitAudioDecodedByteCount > 0) ||
+                    (v as any).mozHasAudio ||
+                    true; // Default to true to attempt audio capture
+            URL.revokeObjectURL(v.src);
+            resolve();
+          };
+          v.onerror = (err) => {
+            console.error(`[Merge] Error loading metadata for file ${i}:`, err);
+            resolve();
+          };
+          v.src = URL.createObjectURL(item.file);
+        });
+
+        // Guard: Fail-safe for invalid durations
+        if (!dur || isNaN(dur) || dur <= options.mergeTransitionDuration) {
+          console.warn(`[Merge] Invalid duration for file ${i}: ${dur}. Using fallback.`);
+          dur = (options.mergeTransitionDuration * 2) || 1;
         }
+        durations.push(dur);
+        hasAudio.push(audio);
+        console.log(`[Merge] File ${i} - Duration: ${dur.toFixed(2)}s, Audio: ${audio}`);
       }
 
       const outputName = `merged_${masterId}.${options.mergeOutputFormat}`;
       let args: string[] = [];
 
       if (options.mergeMode === 'hardcut') {
-        const concatFileContent = inputNames.map(name => `file '${name}'`).join('\n');
+        const concatFileContent = internalInputNames.map(name => `file '${name}'`).join('\n');
         await ffmpeg.writeFile('concat.txt', concatFileContent);
         
         args = ['-f', 'concat', '-safe', '0', '-i', 'concat.txt'];
         if (options.mergeReencode) {
-          args.push('-vcodec', 'libx264', '-preset', 'ultrafast', '-acodec', 'aac', outputName);
+          args.push('-vcodec', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-acodec', 'aac', outputName);
         } else {
           args.push('-c', 'copy', outputName);
         }
       } else {
-        // Crossfade chaining logic (Experimental & Heavy)
-        // Simplified for 2+ videos using complex filter chaining
-        // [0:v][1:v]xfade=transition=fade:duration=0.2:offset=dur0-0.2[v1]; [v1][2:v]xfade=...
-        let filterComplex = '';
-        let lastV = '[0:v]';
-        let lastA = '[0:a]';
-        let currentOffset = durations[0] - options.mergeTransitionDuration;
-
-        for (let i = 1; i < inputNames.length; i++) {
-          const nextV = `[v_out_${i}]`;
-          const nextA = `[a_out_${i}]`;
-          filterComplex += `${lastV}[${i}:v]xfade=transition=fade:duration=${options.mergeTransitionDuration}:offset=${currentOffset.toFixed(2)}${nextV};`;
-          filterComplex += `${lastA}[${i}:a]acrossfade=d=${options.mergeTransitionDuration}${nextA};`;
-          lastV = nextV;
-          lastA = nextA;
-          currentOffset += (durations[i] - options.mergeTransitionDuration);
+        // Crossfade chaining logic (Systematic Normalization)
+        const filters: string[] = [];
+        
+        // Step 1: Normalize only what's strictly necessary (Scale to even dims, match PTS)
+        for (let i = 0; i < internalInputNames.length; i++) {
+          // Minimal normalization: ensure even dimensions (H264 requirement) and reset timestamps
+          filters.push(`[${i}:v]scale=trunc(iw/2)*2:trunc(ih/2)*2,setsar=1,setpts=PTS-STARTPTS[v${i}]`);
+          
+          if (hasAudio[i]) {
+            // Keep original audio but reset timestamps and set specific sample rate for acrossfade
+            filters.push(`[${i}:a]aresample=44100,asetpts=PTS-STARTPTS[a${i}]`);
+          } else {
+            // Generate silence ONLY if definitely no audio
+            filters.push(`anullsrc=r=44100:cl=stereo:d=${durations[i].toFixed(2)}[a${i}]`);
+          }
         }
 
-        const inputArgs = inputNames.flatMap(name => ['-i', name]);
-        args = [...inputArgs, '-filter_complex', filterComplex, '-map', lastV, '-map', lastA, '-vcodec', 'libx264', '-preset', 'ultrafast', '-acodec', 'aac', outputName];
+        // Step 2: Chain the normalized streams
+        filters.push(`[v0][v1]xfade=transition=fade:duration=${options.mergeTransitionDuration}:offset=${(durations[0] - options.mergeTransitionDuration).toFixed(2)}[v_out_1]`);
+        filters.push(`[a0][a1]acrossfade=d=${options.mergeTransitionDuration}[a_out_1]`);
+        
+        let lastV = '[v_out_1]';
+        let lastA = '[a_out_1]';
+        let cumulativeOffset = (durations[0] - options.mergeTransitionDuration) + (durations[1] - options.mergeTransitionDuration);
+
+        for (let i = 2; i < internalInputNames.length; i++) {
+          const nextV = `[v_out_${i}]`;
+          const nextA = `[a_out_${i}]`;
+          filters.push(`${lastV}[v${i}]xfade=transition=fade:duration=${options.mergeTransitionDuration}:offset=${cumulativeOffset.toFixed(2)}${nextV}`);
+          filters.push(`${lastA}[a${i}]acrossfade=d=${options.mergeTransitionDuration}${nextA}`);
+          lastV = nextV;
+          lastA = nextA;
+          cumulativeOffset += (durations[i] - options.mergeTransitionDuration);
+        }
+
+        const inputArgs = internalInputNames.flatMap(name => ['-i', name]);
+        args = [
+          ...inputArgs, 
+          '-filter_complex', filters.join(';'), 
+          '-map', lastV, 
+          '-map', lastA, 
+          '-vcodec', 'libx264', 
+          '-preset', 'ultrafast', 
+          '-acodec', 'aac', 
+          '-pix_fmt', 'yuv420p',
+          '-movflags', '+faststart',
+          outputName
+        ];
       }
 
+      console.log('Final FFmpeg Args:', args.join(' '));
       await ffmpeg.exec(args);
-      const data = await ffmpeg.readFile(outputName);
-      const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: 'video/mp4' }));
 
-      // Cleanup
-      for (const name of inputNames) await ffmpeg.deleteFile(name);
-      await ffmpeg.deleteFile(outputName);
-      if (options.mergeMode === 'hardcut') await ffmpeg.deleteFile('concat.txt');
+      const listResult = await ffmpeg.listDir('.');
+      const fileExists = listResult.some(f => f.name === outputName);
+      if (!fileExists) {
+        console.error('[Merge] Final filesystem state:', listResult);
+        throw new Error('Output file not generated in WASM FS. Check logs for filter errors.');
+      }
+
+      const data = await ffmpeg.readFile(outputName);
+      const mimeType = options.mergeOutputFormat === 'mp4' ? 'video/mp4' : 
+                       options.mergeOutputFormat === 'mkv' ? 'video/x-matroska' : 
+                       'video/webm';
+      const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: mimeType }));
 
       setFiles(prev => prev.map(f => {
         if (f.id === masterId) return { ...f, status: 'done', progress: 100, outputUrl: url, outputName };
@@ -526,8 +602,20 @@ export default function App() {
       }));
     } catch (e) {
       console.error('Merge error:', e);
-      setFiles(prev => prev.map(f => items.some(i => i.id === f.id) ? { ...f, status: 'error', message: 'Merge failed' } : f));
+      const isMemoryError = String(e).includes('memory access out of bounds') || String(e).includes('fragmented');
+      if (isMemoryError) {
+        addNotification('Memory Limit Hit', 'Merge failed due to engine memory constraints. Try fewer or smaller clips.', 'warning');
+        await reloadEngine();
+      }
+      setFiles(prev => prev.map(f => items.some(i => i.id === f.id) ? { ...f, status: 'error', message: isMemoryError ? 'Memory Reset' : 'Merge failed' } : f));
     } finally {
+      // Robust cleanup
+      for (const name of internalInputNames) {
+        try { await ffmpeg.deleteFile(name); } catch (err) {}
+      }
+      try { await ffmpeg.deleteFile('concat.txt'); } catch (err) {}
+      const currentOutputName = `merged_${masterId}.${options.mergeOutputFormat}`;
+      try { await ffmpeg.deleteFile(currentOutputName); } catch (err) {}
       setActiveFileId(null);
     }
   };
@@ -645,17 +733,41 @@ export default function App() {
                   <div className={cn("w-2 h-2 rounded-full", ffmpegLoaded ? "bg-success animate-pulse shadow-[0_0_8px_var(--color-success)]" : "bg-warning")} />
                   {ffmpegLoaded ? 'WASM READY' : 'LOADING...'}
                 </div>
-                {ffmpegLoaded && (
+                <div className="flex items-center gap-1">
                   <button 
-                    onClick={reloadEngine}
-                    className="p-1 hover:bg-white/10 rounded transition-colors text-accent flex items-center gap-1"
-                    title="Refresh Engine"
+                    onClick={() => setShowLogs(!showLogs)}
+                    className={cn("p-1 hover:bg-white/10 rounded transition-colors text-accent", showLogs && "bg-accent/20")}
+                    title="Toggle Console Logs"
                   >
-                    <Loader2 size={10} className={cn(isProcessing && "animate-spin")} />
+                    <Settings size={10} />
                   </button>
-                )}
+                  {ffmpegLoaded && (
+                    <button 
+                      onClick={reloadEngine}
+                      className="p-1 hover:bg-white/10 rounded transition-colors text-accent flex items-center gap-1"
+                      title="Refresh Engine"
+                    >
+                      <Loader2 size={10} className={cn(isProcessing && "animate-spin")} />
+                    </button>
+                  )}
+                </div>
               </div>
               {!ffmpegLoaded && <div className="h-1 bg-border rounded-full overflow-hidden"><div className="h-full bg-accent animate-shimmer w-1/2" /></div>}
+              
+              <AnimatePresence>
+                {showLogs && (
+                  <motion.div 
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: 120, opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="mt-2 text-[8px] font-mono bg-black/40 rounded p-2 overflow-y-auto border border-border/50 text-text-secondary custom-scrollbar"
+                  >
+                    {lastLogs.length === 0 ? '> Idle' : lastLogs.map((log, i) => (
+                      <div key={i} className="mb-1 border-b border-white/5 pb-0.5 last:border-0">{log}</div>
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
         )}
