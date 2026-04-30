@@ -28,7 +28,9 @@ import {
   Image,
   Repeat,
   RotateCw,
-  ArrowLeftRight
+  ArrowLeftRight,
+  Music,
+  Merge
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -42,6 +44,8 @@ const TASKS: { id: TaskType; label: string; icon: any; description: string }[] =
   { id: 'convert', label: 'Format Converter', icon: Layers, description: 'Batch change container formats' },
   { id: 'speed', label: 'Variable Speed', icon: Zap, description: 'Batch playback acceleration with pitch sync' },
   { id: 'transform', label: 'Video Transform', icon: RotateCw, description: 'Loop, Rotate, Flip, or Reverse videos' },
+  { id: 'audioConvert', label: 'Audio Studio', icon: Music, description: 'Batch convert audio formats & bitrates' },
+  { id: 'merge', label: 'Video Merger', icon: Merge, description: 'Join multiple clips with transitions' },
 ];
 
 export default function App() {
@@ -72,6 +76,11 @@ export default function App() {
     flip: 'none',
     loopCount: 2,
     reverse: false,
+    audioTargetFormat: 'mp3',
+    mergeMode: 'hardcut',
+    mergeTransitionDuration: 0.2,
+    mergeOutputFormat: 'mp4',
+    mergeReencode: false,
   });
 
   // Notifications
@@ -359,6 +368,18 @@ export default function App() {
             args = ['-i', inputName, ...vf, '-vcodec', 'libx264', '-preset', 'ultrafast', outputName];
           }
           break;
+        case 'audioConvert':
+          outputName = `${item.id}_${item.name.replace(/\.[^/.]+$/, "")}.${options.audioTargetFormat}`;
+          args = ['-i', inputName];
+          // Use common encoders for the target format
+          if (options.audioTargetFormat === 'mp3') args.push('-acodec', 'libmp3lame');
+          else if (['aac', 'm4a', 'mp4'].includes(options.audioTargetFormat)) args.push('-acodec', 'aac');
+          else if (options.audioTargetFormat === 'opus') args.push('-acodec', 'libopus');
+          else if (['ogg', 'vorbis'].includes(options.audioTargetFormat)) args.push('-acodec', 'libvorbis');
+          else if (options.audioTargetFormat === 'wav') args.push('-acodec', 'pcm_s16le');
+          else if (options.audioTargetFormat === 'flac') args.push('-acodec', 'flac');
+          args.push(outputName);
+          break;
       }
 
       const result = await ffmpeg.exec(args);
@@ -416,19 +437,121 @@ export default function App() {
     }
   };
 
+  const processMerge = async (items: VideoFile[]) => {
+    if (items.length < 2) {
+      addNotification('Merge Error', 'At least two files are required for merging.', 'warning');
+      return;
+    }
+    const ffmpeg = ffmpegRef.current;
+    const masterId = items[0].id;
+    
+    setFiles(prev => prev.map(f => items.some(i => i.id === f.id) ? { ...f, status: 'processing', progress: 0 } : f));
+    setActiveFileId(masterId);
+
+    ffmpeg.on('progress', ({ progress }) => {
+      setFiles(prev => prev.map(f => items.some(i => i.id === f.id) ? { ...f, progress: progress * 100 } : f));
+    });
+
+    try {
+      const inputNames: string[] = [];
+      const durations: number[] = [];
+
+      for (const item of items) {
+        const name = `merge_in_${item.id}_${item.name}`;
+        await ffmpeg.writeFile(name, await fetchFile(item.file));
+        inputNames.push(name);
+        
+        // Get duration for xfade logic
+        if (options.mergeMode === 'crossfade') {
+          const dur = await new Promise<number>((resolve) => {
+            const v = document.createElement('video');
+            v.preload = 'metadata';
+            v.onloadedmetadata = () => resolve(v.duration);
+            v.onerror = () => resolve(0);
+            v.src = URL.createObjectURL(item.file);
+          });
+          durations.push(dur);
+        }
+      }
+
+      const outputName = `merged_${masterId}.${options.mergeOutputFormat}`;
+      let args: string[] = [];
+
+      if (options.mergeMode === 'hardcut') {
+        const concatFileContent = inputNames.map(name => `file '${name}'`).join('\n');
+        await ffmpeg.writeFile('concat.txt', concatFileContent);
+        
+        args = ['-f', 'concat', '-safe', '0', '-i', 'concat.txt'];
+        if (options.mergeReencode) {
+          args.push('-vcodec', 'libx264', '-preset', 'ultrafast', '-acodec', 'aac', outputName);
+        } else {
+          args.push('-c', 'copy', outputName);
+        }
+      } else {
+        // Crossfade chaining logic (Experimental & Heavy)
+        // Simplified for 2+ videos using complex filter chaining
+        // [0:v][1:v]xfade=transition=fade:duration=0.2:offset=dur0-0.2[v1]; [v1][2:v]xfade=...
+        let filterComplex = '';
+        let lastV = '[0:v]';
+        let lastA = '[0:a]';
+        let currentOffset = durations[0] - options.mergeTransitionDuration;
+
+        for (let i = 1; i < inputNames.length; i++) {
+          const nextV = `[v_out_${i}]`;
+          const nextA = `[a_out_${i}]`;
+          filterComplex += `${lastV}[${i}:v]xfade=transition=fade:duration=${options.mergeTransitionDuration}:offset=${currentOffset.toFixed(2)}${nextV};`;
+          filterComplex += `${lastA}[${i}:a]acrossfade=d=${options.mergeTransitionDuration}${nextA};`;
+          lastV = nextV;
+          lastA = nextA;
+          currentOffset += (durations[i] - options.mergeTransitionDuration);
+        }
+
+        const inputArgs = inputNames.flatMap(name => ['-i', name]);
+        args = [...inputArgs, '-filter_complex', filterComplex, '-map', lastV, '-map', lastA, '-vcodec', 'libx264', '-preset', 'ultrafast', '-acodec', 'aac', outputName];
+      }
+
+      await ffmpeg.exec(args);
+      const data = await ffmpeg.readFile(outputName);
+      const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: 'video/mp4' }));
+
+      // Cleanup
+      for (const name of inputNames) await ffmpeg.deleteFile(name);
+      await ffmpeg.deleteFile(outputName);
+      if (options.mergeMode === 'hardcut') await ffmpeg.deleteFile('concat.txt');
+
+      setFiles(prev => prev.map(f => {
+        if (f.id === masterId) return { ...f, status: 'done', progress: 100, outputUrl: url, outputName };
+        if (items.some(i => i.id === f.id)) return { ...f, status: 'done', progress: 100, message: 'Merged' };
+        return f;
+      }));
+    } catch (e) {
+      console.error('Merge error:', e);
+      setFiles(prev => prev.map(f => items.some(i => i.id === f.id) ? { ...f, status: 'error', message: 'Merge failed' } : f));
+    } finally {
+      setActiveFileId(null);
+    }
+  };
+
   const startBatch = async () => {
     if (!ffmpegLoaded) return;
     setIsProcessing(true);
     
-    // Filter files that are not done or processing
     const pendingFiles = files.filter(f => f.status === 'idle' || f.status === 'error');
-    
-    for (const file of pendingFiles) {
-      await processFile(file);
+    if (pendingFiles.length === 0) {
+      setIsProcessing(false);
+      return;
+    }
+
+    if (activeTask === 'merge') {
+      await processMerge(pendingFiles);
+    } else {
+      for (const file of pendingFiles) {
+        await processFile(file);
+      }
     }
     
     setIsProcessing(false);
-    addNotification('Batch Complete', `${pendingFiles.length} files processed.`, 'success');
+    addNotification('Batch Complete', `${activeTask === 'merge' ? 1 : pendingFiles.length} task(s) completed.`, 'success');
   };
 
   return (
@@ -982,6 +1105,114 @@ export default function App() {
                         Pitch-corrected audio using multi-chained atempo filters
                       </p>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {activeTask === 'audioConvert' && (
+                <div className="space-y-4">
+                  <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Output Audio Format</label>
+                  <select 
+                    value={options.audioTargetFormat}
+                    onChange={(e) => setOptions({...options, audioTargetFormat: e.target.value})}
+                    className="w-full bg-bg border border-border rounded-xl p-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+                  >
+                    <option value="mp3">MP3 (Universal)</option>
+                    <option value="wav">WAV (Lossless Uncompressed)</option>
+                    <option value="flac">FLAC (Lossless Compressed)</option>
+                    <option value="m4a">M4A (Apple Standard)</option>
+                    <option value="aac">AAC (Modern Standard)</option>
+                    <option value="ogg">OGG Vorbis</option>
+                    <option value="opus">Opus (High Performance)</option>
+                  </select>
+                  <div className="p-3 bg-bg rounded-xl border border-border">
+                    <p className="text-[10px] text-text-secondary flex items-start gap-2">
+                      <Music size={12} className="shrink-0 mt-0.5" />
+                      Studio-quality batch conversion with optimized bitrates.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {activeTask === 'merge' && (
+                <div className="space-y-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Merge Style</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button 
+                        onClick={() => setOptions({...options, mergeMode: 'hardcut'})}
+                        className={cn(
+                          "p-3 rounded-xl border text-sm transition-all",
+                          options.mergeMode === 'hardcut' ? "bg-accent/10 border-accent/40 text-accent" : "bg-bg/50 border-border text-text-secondary hover:bg-bg"
+                        )}
+                      >
+                        Hard Cut
+                      </button>
+                      <button 
+                        onClick={() => setOptions({...options, mergeMode: 'crossfade'})}
+                        className={cn(
+                          "p-3 rounded-xl border text-sm transition-all",
+                          options.mergeMode === 'crossfade' ? "bg-accent/10 border-accent/40 text-accent" : "bg-bg/50 border-border text-text-secondary hover:bg-bg"
+                        )}
+                      >
+                        Crossfade
+                      </button>
+                    </div>
+                  </div>
+
+                  {options.mergeMode === 'crossfade' && (
+                    <div className="space-y-2">
+                      <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Transition Duration (Sec)</label>
+                      <div className="flex items-center gap-4 bg-bg p-3 rounded-xl">
+                        <input 
+                          type="number" step="0.1" min="0.1" max="5.0"
+                          value={options.mergeTransitionDuration}
+                          onChange={(e) => setOptions({...options, mergeTransitionDuration: parseFloat(e.target.value)})}
+                          className="bg-transparent border-none text-sm w-full focus:outline-none"
+                        />
+                        <span className="text-[10px] text-text-secondary">SECONDS</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Merge Output Format</label>
+                    <select 
+                      value={options.mergeOutputFormat}
+                      onChange={(e) => setOptions({...options, mergeOutputFormat: e.target.value})}
+                      className="w-full bg-bg border border-border rounded-xl p-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+                    >
+                      <option value="mp4">MP4 Video</option>
+                      <option value="mkv">MKV Video</option>
+                      <option value="webm">WebM Video</option>
+                    </select>
+                  </div>
+
+                  <div className="space-y-4 pt-2">
+                    <button 
+                      onClick={() => setOptions({...options, mergeReencode: !options.mergeReencode})}
+                      className={cn(
+                        "w-full flex flex-col gap-1 p-3 rounded-xl border transition-all text-left",
+                        options.mergeReencode || options.mergeMode === 'crossfade' ? "bg-accent/10 border-accent text-white" : "bg-bg/50 border-border text-text-secondary"
+                      )}
+                      disabled={options.mergeMode === 'crossfade'}
+                    >
+                      <div className="flex items-center gap-2">
+                        <div className={cn("w-3 h-3 rounded-sm border flex items-center justify-center", options.mergeReencode || options.mergeMode === 'crossfade' ? "bg-accent border-accent" : "border-border")}>
+                          {(options.mergeReencode || options.mergeMode === 'crossfade') && <CheckCircle size={10} className="text-white" />}
+                        </div>
+                        <span className="text-xs font-bold">Standardize Stream (Re-encode)</span>
+                      </div>
+                      <p className="text-[10px] opacity-60 ml-5">Essential if videos have different resolutions or codecs. Mandatory for Crossfade.</p>
+                    </button>
+                    {!options.mergeReencode && options.mergeMode === 'hardcut' && (
+                       <div className="p-3 bg-warning/5 border border-warning/20 rounded-xl">
+                         <p className="text-[10px] text-warning flex items-start gap-2">
+                           <AlertCircle size={12} className="shrink-0 mt-0.5" />
+                           Direct stream copy (Hardcut) requires all clips to have identical properties (resolution, bitrate, etc).
+                         </p>
+                       </div>
+                    )}
                   </div>
                 </div>
               )}
