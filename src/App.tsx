@@ -310,12 +310,62 @@ export default function App() {
           if (sliceMode === 'range') {
             outputName = `clip_${item.id}_${item.name}`;
             // Use -avoid_negative_ts make_zero to ensure the output starts at 00:00:00
-            args = ['-i', inputName, '-ss', rangeStart, '-to', rangeEnd, '-c', 'copy', '-avoid_negative_ts', 'make_zero', outputName];
+            // Put -ss and -to before -i for fast, keyframe-accurate seeking
+            args = ['-ss', rangeStart, '-to', rangeEnd, '-i', inputName, '-c', 'copy', '-avoid_negative_ts', 'make_zero', outputName];
           } else {
-            // Split mode
-            outputName = `${item.id}_part_%03d_${item.name}`;
-            // -reset_timestamps 1 ensures each segment starts at 0
-            args = ['-i', inputName, '-f', 'segment', '-segment_time', splitInterval.toString(), '-reset_timestamps', '1', '-c', 'copy', outputName];
+            // Sequential Splitting to avoid MEMFS memory exhaustion on large videos
+            let dur = await new Promise<number>((resolve) => {
+              const v = document.createElement('video');
+              v.preload = 'metadata';
+              v.onloadedmetadata = () => { resolve(v.duration); URL.revokeObjectURL(v.src); };
+              v.onerror = () => resolve(0);
+              v.src = URL.createObjectURL(item.file);
+            });
+            if (!dur || isNaN(dur)) dur = 600; // Fallback if probe fails
+
+            const outputs: { name: string, url: string }[] = [];
+            const numParts = Math.ceil(dur / splitInterval);
+            
+            for (let i = 0; i < numParts; i++) {
+              const start = i * splitInterval;
+              const partName = `${item.id}_part_${i.toString().padStart(3, '0')}_${item.name}`;
+              // Put -ss before -i for fast, keyframe-accurate seeking
+              const partArgs = ['-ss', start.toString(), '-i', inputName, '-t', splitInterval.toString(), '-c', 'copy', '-avoid_negative_ts', 'make_zero', partName];
+              
+              const r = await ffmpeg.exec(partArgs);
+              if (r !== 0) {
+                 console.warn(`FFmpeg part extraction exited with ${r}. Memory may be low.`);
+                 // If it's the first part and it fails, throw. Otherwise, just stop extracting parts to save what we have.
+                 if (i === 0) throw new Error('FFmpeg failed on first slice segment.');
+                 break; 
+              }
+              
+              try {
+                const d = await ffmpeg.readFile(partName);
+                if (d.length === 0) break; // End of file or invalid output
+                const u = URL.createObjectURL(new Blob([(d as any).buffer], { type: 'video/mp4' }));
+                outputs.push({ name: partName.replace(`${item.id}_`, ''), url: u });
+                await ffmpeg.deleteFile(partName);
+              } catch (err) {
+                console.warn('Could not read segment part:', err);
+                break;
+              }
+              
+              setFiles(prev => prev.map(f => f.id === item.id ? { ...f, progress: Math.min(100, (i + 1) / numParts * 100) } : f));
+            }
+
+            await ffmpeg.deleteFile(inputName);
+            
+            setFiles(prev => prev.map(f => f.id === item.id ? { 
+              ...f, 
+              status: 'done', 
+              progress: 100, 
+              isMultiOutput: true,
+              outputUrls: outputs
+            } : f));
+            
+            setActiveFileId(null);
+            return; // Exit early since we handled the whole file here
           }
           break;
         case 'gif':
@@ -386,47 +436,31 @@ export default function App() {
       }
 
       const result = await ffmpeg.exec(args);
-
-      if (activeTask === 'slice' && sliceMode === 'split') {
-        // Find all files matching the pattern
-        const list = await ffmpeg.listDir('.');
-        const parts = list.filter(f => !f.isDir && f.name.startsWith(`${item.id}_part_`));
-        
-        const outputs = await Promise.all(parts.map(async (p) => {
-          const d = await ffmpeg.readFile(p.name);
-          const u = URL.createObjectURL(new Blob([(d as any).buffer], { type: 'video/mp4' }));
-          await ffmpeg.deleteFile(p.name);
-          return { name: p.name.replace(`${item.id}_`, ''), url: u };
-        }));
-
-        await ffmpeg.deleteFile(inputName);
-        
-        setFiles(prev => prev.map(f => f.id === item.id ? { 
-          ...f, 
-          status: 'done', 
-          progress: 100, 
-          isMultiOutput: true,
-          outputUrls: outputs
-        } : f));
-
-      } else {
-        // Read output
-        const data = await ffmpeg.readFile(outputName);
-        const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: 'video/mp4' }));
-
-        // CLEANUP IMMEDIATELY
-        await ffmpeg.deleteFile(inputName);
-        await ffmpeg.deleteFile(outputName);
-        if (activeTask === 'gif') await ffmpeg.deleteFile('palette.png');
-
-        setFiles(prev => prev.map(f => f.id === item.id ? { 
-          ...f, 
-          status: 'done', 
-          progress: 100, 
-          outputUrl: url,
-          outputName: outputName
-        } : f));
+      if (result !== 0) {
+        throw new Error('FFmpeg processing failed with exit code ' + result);
       }
+
+      // Read output
+      const data = await ffmpeg.readFile(outputName);
+      if (data.length === 0) {
+        throw new Error('FFmpeg generated an empty output file.');
+      }
+      const url = URL.createObjectURL(new Blob([(data as any).buffer], { type: 'video/mp4' }));
+
+      // CLEANUP IMMEDIATELY
+      await ffmpeg.deleteFile(inputName);
+      await ffmpeg.deleteFile(outputName);
+      if (activeTask === 'gif') {
+        try { await ffmpeg.deleteFile('palette.png'); } catch(e) {}
+      }
+
+      setFiles(prev => prev.map(f => f.id === item.id ? { 
+        ...f, 
+        status: 'done', 
+        progress: 100, 
+        outputUrl: url,
+        outputName: outputName
+      } : f));
     } catch (error) {
       console.error('Processing error:', error);
       const isMemoryError = String(error).includes('memory access out of bounds');
