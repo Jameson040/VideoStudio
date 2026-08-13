@@ -30,7 +30,8 @@ import {
   RotateCw,
   ArrowLeftRight,
   Music,
-  Merge
+  Merge,
+  ExternalLink
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { cn } from './lib/utils';
@@ -378,7 +379,8 @@ export default function App() {
           args = ['-i', inputName, '-i', paletteName, '-filter_complex', `[0:v]${gifFilter}[x];[x][1:v]paletteuse`, outputName];
           break;
         case 'convert':
-          outputName = `${item.id}_${item.name.replace(/\.[^/.]+$/, "")}.${targetFormat}`;
+          const safeTargetFormat = targetFormat.trim() || 'mp4';
+          outputName = `${item.id}_${item.name.replace(/\.[^/.]+$/, "")}.${safeTargetFormat}`;
           args = ['-i', inputName, '-c', 'copy', '-map', '0', outputName];
           break;
         case 'speed':
@@ -837,17 +839,27 @@ export default function App() {
             </div>
           </div>
           <div className="flex items-center gap-3 lg:gap-6">
+            <a 
+              href="https://creators-quest.blogspot.com/" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-2 sm:px-3 py-1.5 rounded-lg bg-surface hover:bg-white/5 text-xs font-medium text-white/80 transition-colors border border-border/50"
+              title="Creator's Quest"
+            >
+              <ExternalLink size={14} className="text-accent" />
+              <span className="hidden sm:inline">Creator's Quest</span>
+            </a>
             <button className="p-2.5 hover:bg-surface rounded-xl transition-all relative group">
                <Bell size={20} className="text-text-secondary group-hover:text-white" />
                {notifications.length > 0 && <span className="absolute top-2.5 right-2.5 w-2.5 h-2.5 bg-accent rounded-full border-2 border-bg" />}
             </button>
             <div className="flex items-center gap-3 pl-4 border-l border-border/50">
                <div className="text-right hidden sm:block">
-                 <p className="text-[10px] font-bold text-white/80 leading-none">James B.</p>
-                 <p className="text-[9px] text-accent font-medium mt-1">PRO USER</p>
+                 <p className="text-[10px] font-bold text-white/80 leading-none">WorldEater404</p>
+                 <p className="text-[9px] text-accent font-medium mt-1">HOBBY PROJECT</p>
                </div>
                <div className="w-10 h-10 rounded-xl bg-accent/20 border border-accent/40 flex items-center justify-center text-accent shrink-0 shadow-lg shadow-accent/5">
-                 <span className="text-sm font-black">JB</span>
+                 <span className="text-sm font-black">WE</span>
                </div>
             </div>
           </div>
@@ -855,7 +867,7 @@ export default function App() {
 
         {/* Workspace Area - Scrollable */}
         <div className="flex-1 overflow-y-auto lg:overflow-hidden">
-          <div className="h-full grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 lg:gap-8 p-4 lg:p-8">
+          <div className="min-h-full lg:h-full grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-4 lg:gap-8 p-4 lg:p-8 pb-32 lg:pb-8">
             {/* File Management Area */}
             <div className="flex flex-col gap-6 min-w-0 h-full lg:overflow-hidden">
               {/* Drop Zone */}
@@ -1153,19 +1165,42 @@ export default function App() {
               {activeTask === 'convert' && (
                 <div className="space-y-4">
                    <label className="text-[10px] uppercase font-bold text-text-secondary tracking-widest">Target Format</label>
-                   <select 
-                     value={options.targetFormat}
-                     onChange={(e) => setOptions({...options, targetFormat: e.target.value})}
-                     className="w-full bg-bg border border-border rounded-xl p-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
-                   >
-                     <option value="mp4">MP4 Video</option>
-                     <option value="webm">WebM Video</option>
-                     <option value="mov">QuickTime (MOV)</option>
-                     <option value="avi">AVI Video</option>
-                     <option value="mkv">Matroska (MKV)</option>
-                     <option value="flv">Flash Video (FLV)</option>
-                     <option value="wmv">Windows Media (WMV)</option>
-                   </select>
+                   <div className="space-y-3">
+                     <select 
+                       value={['mp4', 'webm', 'mov', 'avi', 'mkv', 'flv', 'wmv'].includes(options.targetFormat) ? options.targetFormat : 'custom'}
+                       onChange={(e) => setOptions({...options, targetFormat: e.target.value === 'custom' ? 'amv' : e.target.value})}
+                       className="w-full bg-bg border border-border rounded-xl p-3 text-sm focus:outline-none focus:ring-1 focus:ring-accent"
+                     >
+                       <option value="mp4">MP4 Video</option>
+                       <option value="webm">WebM Video</option>
+                       <option value="mov">QuickTime (MOV)</option>
+                       <option value="avi">AVI Video</option>
+                       <option value="mkv">Matroska (MKV)</option>
+                       <option value="flv">Flash Video (FLV)</option>
+                       <option value="wmv">Windows Media (WMV)</option>
+                       <option value="custom">Custom Format...</option>
+                     </select>
+                     
+                     {!['mp4', 'webm', 'mov', 'avi', 'mkv', 'flv', 'wmv'].includes(options.targetFormat) && (
+                       <div className="space-y-1">
+                         <label className="text-[9px] uppercase font-bold text-text-secondary">Custom Extension</label>
+                         <div className="flex items-center bg-bg border border-border p-2 rounded-xl focus-within:ring-1 focus-within:ring-accent transition-all">
+                           <span className="text-text-secondary font-mono mr-1">.</span>
+                           <input 
+                             type="text" 
+                             placeholder="amv"
+                             value={options.targetFormat}
+                             onChange={(e) => {
+                               const val = e.target.value.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+                               setOptions({...options, targetFormat: val});
+                             }}
+                             className="bg-transparent border-none text-xs font-mono w-full focus:outline-none"
+                           />
+                         </div>
+                         <p className="text-[9px] text-text-secondary italic">Ensure FFmpeg supports this container.</p>
+                       </div>
+                     )}
+                   </div>
                 </div>
               )}
 
